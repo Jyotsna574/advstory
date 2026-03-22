@@ -28,67 +28,77 @@ function Avatar({ size = 60, className = "" }) {
       alt="Your explorer"
       className={`rounded-full object-cover border-4 border-white shadow-xl ${className}`}
       style={{ width: size, height: size }}
+      decoding="async"
+      loading="lazy"
     />
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SPEECH ENGINE
+//  SPEECH ENGINE — ElevenLabs TTS (falls back to Web Speech API if API fails)
 // ═══════════════════════════════════════════════════════════════════════════
 function useSpeech() {
   const [subtitle, setSubtitle] = useState("");
   const [lastSpokenText, setLastSpokenText] = useState("");
   const lastSpokenRef = useRef("");
+  const currentAudioRef = useRef(null);
 
-  useEffect(() => {
-    const load = () => window.speechSynthesis.getVoices();
-    load();
-    window.speechSynthesis.addEventListener?.("voiceschanged", load);
-    return () => {
-      window.speechSynthesis.removeEventListener?.("voiceschanged", load);
-      window.speechSynthesis.cancel();
-    };
-  }, []);
-
-  const getBestVoice = useCallback(() => {
+  const fallbackSpeech = useCallback((text, onDone) => {
+    if (!text) return;
+    const u = new SpeechSynthesisUtterance(text);
     const list = window.speechSynthesis.getVoices();
-    for (const name of [
-      "Microsoft Zira", "Microsoft Jenny", "Google UK English Female",
-      "Samantha", "Victoria", "Karen", "Moira", "Tessa",
-    ]) {
-      const v = list.find((v) => v.name.includes(name));
-      if (v) return v;
-    }
-    const f = list.find(
-      (v) => v.lang?.startsWith("en") && /female|woman|girl|zira|jenny/i.test(v.name ?? "")
-    );
-    return f || list.find((v) => v.lang === "en-US") || list.find((v) => v.lang?.startsWith("en")) || list[0];
+    const v = list.find((x) => x.lang?.startsWith("en")) || list[0];
+    if (v) u.voice = v;
+    u.pitch = 1.3;
+    u.rate = 0.82;
+    u.onstart = () => setSubtitle(text);
+    u.onend = u.onerror = () => {
+      setSubtitle("");
+      onDone?.();
+    };
+    window.speechSynthesis.speak(u);
   }, []);
 
   const speak = useCallback(
-    (text, onDone) => {
+    async (text, onDone) => {
       if (!text) return;
       lastSpokenRef.current = text;
       setLastSpokenText(text);
       window.speechSynthesis.cancel();
-      const fire = () => {
-        const u = new SpeechSynthesisUtterance(text);
-        const v = getBestVoice();
-        if (v) u.voice = v;
-        u.pitch = 1.3; u.rate = 0.82; u.volume = 1;
-        u.onstart = () => setSubtitle(text);
-        u.onend = () => { setSubtitle(""); onDone?.(); };
-        u.onerror = () => { setSubtitle(""); onDone?.(); };
-        window.speechSynthesis.speak(u);
-      };
-      window.speechSynthesis.getVoices().length > 0
-        ? fire()
-        : window.speechSynthesis.addEventListener("voiceschanged", function h() {
-            fire();
-            window.speechSynthesis.removeEventListener("voiceschanged", h);
-          });
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+
+      try {
+        const base = window.location.origin;
+        const res = await fetch(`${base}/api/tts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) throw new Error("TTS failed");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentAudioRef.current = audio;
+        audio.onplay = () => setSubtitle(text);
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          currentAudioRef.current = null;
+          setSubtitle("");
+          onDone?.();
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(url);
+          fallbackSpeech(text, onDone);
+        };
+        await audio.play();
+      } catch {
+        fallbackSpeech(text, onDone);
+      }
     },
-    [getBestVoice]
+    [fallbackSpeech]
   );
 
   const replay = useCallback(() => {
@@ -97,6 +107,10 @@ function useSpeech() {
 
   const stop = useCallback(() => {
     window.speechSynthesis.cancel();
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
     setSubtitle("");
   }, []);
 
@@ -540,7 +554,7 @@ function Sparkles({ count = 18 }) {
 
 function Confetti() {
   const pieces = useMemo(
-    () => Array.from({ length: 55 }, (_, i) => ({
+    () => Array.from({ length: 28 }, (_, i) => ({
       id: i, x: Math.random() * 100,
       color: ["#FF6B6B","#4ECDC4","#FFE66D","#A78BFA","#F472B6","#34D399"][Math.floor(Math.random() * 6)],
       delay: Math.random() * 2, duration: 2 + Math.random() * 3,
@@ -1101,6 +1115,8 @@ function OnboardingScreen({ kidName, setKidName, onStart }) {
                       animate={isSelected ? { boxShadow: "0 0 0 4px rgba(192, 132, 252, 0.55)" } : {}}
                       className={`w-18 h-18 md:w-20 md:h-20 rounded-full object-cover border-3 bg-gradient-to-br from-violet-100 to-fuchsia-100 ${isSelected ? "border-fuchsia-500" : "border-purple-200"}`}
                       style={{ width: 72, height: 72 }}
+                      decoding="async"
+                      loading="lazy"
                     />
                   </motion.button>
                 );
